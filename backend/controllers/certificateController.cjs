@@ -1,6 +1,13 @@
 const Certificate = require("../models/Certificate.cjs");
+const QRCode = require("qrcode");
+const VerificationLog = require("../models/VerificationLog.cjs");
+const { generateCertificatePDF } = require("../services/pdfService.cjs");
 
-// CREATE certificate
+
+// =====================================================
+// CREATE CERTIFICATE
+// =====================================================
+
 exports.createCertificate = async (req, res) => {
     try {
         const {
@@ -8,13 +15,13 @@ exports.createCertificate = async (req, res) => {
             course,
             programCode,
             completionDate,
-            issueDate,
-            qrData
+            issueDate
         } = req.body;
 
         if (!studentName || !course || !programCode || !completionDate) {
             return res.status(400).json({
-                message: "Student name, course, program code and completion date are required"
+                message:
+                    "Student name, course, program code and completion date are required"
             });
         }
 
@@ -23,9 +30,24 @@ exports.createCertificate = async (req, res) => {
             course,
             programCode,
             completionDate,
-            issueDate,
-            qrData
+            issueDate
         });
+
+        await certificate.save();
+
+        const frontendUrl =
+            process.env.FRONTEND_URL || "https://upskillshub.com";
+
+        const verificationUrl =
+            `${frontendUrl}/verify/${certificate.certificateNumber}`;
+
+        const qrData = await QRCode.toDataURL(verificationUrl, {
+            errorCorrectionLevel: "H",
+            width: 300,
+            margin: 2
+        });
+
+        certificate.qrData = qrData;
 
         await certificate.save();
 
@@ -33,6 +55,7 @@ exports.createCertificate = async (req, res) => {
             message: "Certificate created successfully",
             certificate
         });
+
     } catch (error) {
         console.error("Create certificate error:", error);
 
@@ -44,7 +67,10 @@ exports.createCertificate = async (req, res) => {
 };
 
 
-// GET all certificates
+// =====================================================
+// GET ALL CERTIFICATES
+// =====================================================
+
 exports.getCertificates = async (req, res) => {
     try {
         const certificates = await Certificate.find()
@@ -53,6 +79,7 @@ exports.getCertificates = async (req, res) => {
         res.status(200).json({
             certificates
         });
+
     } catch (error) {
         console.error("Get certificates error:", error);
 
@@ -64,7 +91,10 @@ exports.getCertificates = async (req, res) => {
 };
 
 
-// GET one certificate by ID
+// =====================================================
+// GET ONE CERTIFICATE
+// =====================================================
+
 exports.getCertificateById = async (req, res) => {
     try {
         const certificate = await Certificate.findById(req.params.id);
@@ -78,6 +108,7 @@ exports.getCertificateById = async (req, res) => {
         res.status(200).json({
             certificate
         });
+
     } catch (error) {
         console.error("Get certificate error:", error);
 
@@ -89,19 +120,19 @@ exports.getCertificateById = async (req, res) => {
 };
 
 
-// UPDATE certificate
+// =====================================================
+// UPDATE CERTIFICATE
+// =====================================================
+
 exports.updateCertificate = async (req, res) => {
     try {
-        // Certificate number is deliberately excluded.
-        // It cannot be changed after creation.
         const allowedFields = [
             "studentName",
             "course",
             "programCode",
             "completionDate",
             "issueDate",
-            "status",
-            "qrData"
+            "status"
         ];
 
         const updates = {};
@@ -131,6 +162,7 @@ exports.updateCertificate = async (req, res) => {
             message: "Certificate updated successfully",
             certificate
         });
+
     } catch (error) {
         console.error("Update certificate error:", error);
 
@@ -142,7 +174,10 @@ exports.updateCertificate = async (req, res) => {
 };
 
 
-// DELETE certificate
+// =====================================================
+// DELETE CERTIFICATE
+// =====================================================
+
 exports.deleteCertificate = async (req, res) => {
     try {
         const certificate = await Certificate.findByIdAndDelete(
@@ -158,6 +193,7 @@ exports.deleteCertificate = async (req, res) => {
         res.status(200).json({
             message: "Certificate deleted successfully"
         });
+
     } catch (error) {
         console.error("Delete certificate error:", error);
 
@@ -169,7 +205,10 @@ exports.deleteCertificate = async (req, res) => {
 };
 
 
-// VERIFY certificate by certificate number
+// =====================================================
+// VERIFY CERTIFICATE
+// =====================================================
+
 exports.verifyCertificate = async (req, res) => {
     try {
         const certificateNumber = req.params.certificateNumber
@@ -181,33 +220,146 @@ exports.verifyCertificate = async (req, res) => {
         });
 
         if (!certificate) {
+            await VerificationLog.create({
+                certificateNumber,
+                result: "Not Found",
+                ipAddress: req.ip,
+                userAgent: req.get("user-agent")
+            });
+
             return res.status(404).json({
                 message: "Certificate Not Found"
             });
         }
 
         if (certificate.status === "Revoked") {
+            await VerificationLog.create({
+                certificateNumber,
+                result: "Revoked",
+                ipAddress: req.ip,
+                userAgent: req.get("user-agent")
+            });
+
             return res.status(403).json({
                 message: "Certificate Revoked",
                 certificateNumber: certificate.certificateNumber
             });
         }
 
+        await VerificationLog.create({
+            certificateNumber,
+            result: "Verified",
+            ipAddress: req.ip,
+            userAgent: req.get("user-agent")
+        });
+
         res.status(200).json({
             message: "Certificate Verified",
+
             certificate: {
                 studentName: certificate.studentName,
                 course: certificate.course,
                 certificateNumber: certificate.certificateNumber,
+                completionDate: certificate.completionDate,
                 issueDate: certificate.issueDate,
                 status: certificate.status
             }
         });
+
     } catch (error) {
         console.error("Verify certificate error:", error);
 
         res.status(500).json({
             message: "Certificate verification failed",
+            error: error.message
+        });
+    }
+};
+
+
+// =====================================================
+// DOWNLOAD CERTIFICATE PDF
+// =====================================================
+
+exports.downloadCertificate = async (req, res) => {
+    try {
+        const certificate = await Certificate.findById(req.params.id);
+
+        if (!certificate) {
+            return res.status(404).json({
+                message: "Certificate Not Found"
+            });
+        }
+
+        const pdfBytes = await generateCertificatePDF(certificate);
+
+        res.setHeader(
+            "Content-Type",
+            "application/pdf"
+        );
+
+        res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${certificate.certificateNumber}.pdf"`
+        );
+
+        res.send(Buffer.from(pdfBytes));
+
+    } catch (error) {
+        console.error("Download certificate error:", error);
+
+        res.status(500).json({
+            message: "Failed to generate certificate PDF",
+            error: error.message
+        });
+    }
+};
+
+
+// =====================================================
+// REVOKE CERTIFICATE
+// =====================================================
+
+exports.revokeCertificate = async (req, res) => {
+    try {
+        const certificate = await Certificate.findById(req.params.id);
+
+        if (!certificate) {
+            return res.status(404).json({
+                message: "Certificate Not Found"
+            });
+        }
+
+        // Prevent revoking an already revoked certificate
+        if (certificate.status === "Revoked") {
+            return res.status(400).json({
+                message: "Certificate is already revoked",
+                certificate
+            });
+        }
+
+        certificate.status = "Revoked";
+
+        await certificate.save();
+
+        // Record revoke action
+        await VerificationLog.create({
+            certificateNumber: certificate.certificateNumber,
+            result: "Revoked",
+            ipAddress: req.ip,
+            userAgent: req.get("user-agent")
+        });
+
+        res.status(200).json({
+            message: "Certificate revoked successfully",
+            certificate
+        });
+
+    } catch (error) {
+        console.error("Revoke certificate error:", error);
+
+        res.status(500).json({
+            message: "Failed to revoke certificate",
             error: error.message
         });
     }

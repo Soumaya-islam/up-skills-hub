@@ -1,21 +1,6 @@
 const mongoose = require("mongoose");
+const Counter = require("./Counter.cjs");
 
-// Counter used to generate automatic certificate numbers
-const CounterSchema = new mongoose.Schema({
-    key: {
-        type: String,
-        required: true,
-        unique: true
-    },
-    seq: {
-        type: Number,
-        default: 0
-    }
-});
-
-const Counter = mongoose.model("CertificateCounter", CounterSchema);
-
-// Certificate schema
 const CertificateSchema = new mongoose.Schema(
     {
         studentName: {
@@ -71,36 +56,39 @@ const CertificateSchema = new mongoose.Schema(
     }
 );
 
-// Automatically generate certificate number when creating a certificate
-CertificateSchema.pre("save", async function (next) {
-    try {
-        if (!this.isNew || this.certificateNumber) {
-            return next();
-        }
 
-        const year = new Date().getFullYear();
-        const key = `USH-${year}-${this.programCode}`;
+// Automatically generate unique certificate number
+CertificateSchema.pre("save", async function () {
 
-        const counter = await Counter.findOneAndUpdate(
-            { key },
-            { $inc: { seq: 1 } },
-            {
-                new: true,
-                upsert: true,
-                setDefaultsOnInsert: true
-            }
-        );
-
-        const sequence = String(counter.seq).padStart(6, "0");
-
-        this.certificateNumber = `USH-${year}-${this.programCode}-${sequence}`;
-
-        next();
-    } catch (error) {
-        next(error);
+    // Don't generate another number when updating
+    if (!this.isNew || this.certificateNumber) {
+        return;
     }
+
+    const year = new Date().getFullYear();
+
+    const counterName =
+        `USH-${year}-${this.programCode}`;
+
+    const counter = await Counter.findOneAndUpdate(
+        { name: counterName },
+        { $inc: { seq: 1 } },
+        {
+            new: true,
+            upsert: true,
+            setDefaultsOnInsert: true
+        }
+    );
+
+    const sequence =
+        String(counter.seq).padStart(6, "0");
+
+    this.certificateNumber =
+        `USH-${year}-${this.programCode}-${sequence}`;
 });
 
-const Certificate = mongoose.model("Certificate", CertificateSchema);
 
-module.exports = Certificate;
+module.exports = mongoose.model(
+    "Certificate",
+    CertificateSchema
+);
