@@ -2,6 +2,7 @@ const Certificate = require("../models/Certificate.cjs");
 const QRCode = require("qrcode");
 const VerificationLog = require("../models/VerificationLog.cjs");
 const { generateCertificatePDF } = require("../services/pdfService.cjs");
+const { sendCertificateEmail } = require("../services/emailService.cjs");
 
 
 // =====================================================
@@ -12,21 +13,29 @@ exports.createCertificate = async (req, res) => {
     try {
         const {
             studentName,
+            studentEmail,
             course,
             programCode,
             completionDate,
             issueDate
         } = req.body;
 
-        if (!studentName || !course || !programCode || !completionDate) {
+        if (
+            !studentName ||
+            !studentEmail ||
+            !course ||
+            !programCode ||
+            !completionDate
+        ) {
             return res.status(400).json({
                 message:
-                    "Student name, course, program code and completion date are required"
+                    "Student name, student email, course, program code and completion date are required"
             });
         }
 
         const certificate = new Certificate({
             studentName,
+            studentEmail,
             course,
             programCode,
             completionDate,
@@ -34,6 +43,10 @@ exports.createCertificate = async (req, res) => {
         });
 
         await certificate.save();
+
+        // =================================================
+        // GENERATE QR CODE
+        // =================================================
 
         const frontendUrl =
             process.env.FRONTEND_URL || "https://upskillshub.com";
@@ -51,8 +64,50 @@ exports.createCertificate = async (req, res) => {
 
         await certificate.save();
 
+        // =================================================
+        // GENERATE PDF
+        // =================================================
+
+        const pdfBytes = await generateCertificatePDF(certificate);
+
+        // =================================================
+        // SEND CERTIFICATE EMAIL
+        // =================================================
+
+        let emailSent = false;
+
+        try {
+            await sendCertificateEmail({
+                to: certificate.studentEmail,
+                studentName: certificate.studentName,
+                certificateNumber: certificate.certificateNumber,
+                pdfBytes
+            });
+
+            emailSent = true;
+
+            console.log(
+                `Certificate email sent to ${certificate.studentEmail}`
+            );
+
+        } catch (emailError) {
+            console.error(
+                "Certificate email error:",
+                emailError
+            );
+        }
+
+        // =================================================
+        // RESPONSE
+        // =================================================
+
         res.status(201).json({
-            message: "Certificate created successfully",
+            message: emailSent
+                ? "Certificate created and emailed successfully"
+                : "Certificate created successfully, but email could not be sent",
+
+            emailSent,
+
             certificate
         });
 
@@ -128,6 +183,7 @@ exports.updateCertificate = async (req, res) => {
     try {
         const allowedFields = [
             "studentName",
+            "studentEmail",
             "course",
             "programCode",
             "completionDate",
@@ -330,7 +386,6 @@ exports.revokeCertificate = async (req, res) => {
             });
         }
 
-        // Prevent revoking an already revoked certificate
         if (certificate.status === "Revoked") {
             return res.status(400).json({
                 message: "Certificate is already revoked",
@@ -342,7 +397,6 @@ exports.revokeCertificate = async (req, res) => {
 
         await certificate.save();
 
-        // Record revoke action
         await VerificationLog.create({
             certificateNumber: certificate.certificateNumber,
             result: "Revoked",
